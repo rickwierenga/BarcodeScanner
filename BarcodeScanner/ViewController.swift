@@ -7,6 +7,7 @@
 //
 
 import AVFoundation
+import Vision
 import UIKit
 
 class ViewController: UIViewController, AVCapturePhotoCaptureDelegate {
@@ -16,6 +17,19 @@ class ViewController: UIViewController, AVCapturePhotoCaptureDelegate {
     var captureOutput: AVCapturePhotoOutput?
 
     var shutterButton: UIButton!
+
+    var productCatalog = ProductCatalog()
+
+    lazy var detectBarcodeRequest: VNDetectBarcodesRequest = {
+        return VNDetectBarcodesRequest(completionHandler: { (request, error) in
+            guard error == nil else {
+                self.showAlert(withTitle: "Barcode Error", message: error!.localizedDescription)
+                return
+            }
+
+            self.processClassification(for: request)
+        })
+    }()
 
     // MARK: - View controller life cycle
     override func viewDidLoad() {
@@ -115,7 +129,22 @@ class ViewController: UIViewController, AVCapturePhotoCaptureDelegate {
     func photoOutput(_ output: AVCapturePhotoOutput, didFinishProcessingPhoto photo: AVCapturePhoto, error: Error?) {
         if let imageData = photo.fileDataRepresentation(),
             let image = UIImage(data: imageData) {
-            // TODO: Process image.
+
+            // Convert image to CIImage.
+            guard let ciImage = CIImage(image: image) else {
+                fatalError("Unable to create \(CIImage.self) from \(image).")
+            }
+
+            // Perform the classification request on a background thread.
+            DispatchQueue.global(qos: .userInitiated).async {
+                let handler = VNImageRequestHandler(ciImage: ciImage, orientation: CGImagePropertyOrientation.up, options: [:])
+
+                do {
+                    try handler.perform([self.detectBarcodeRequest])
+                } catch {
+                    self.showAlert(withTitle: "Error Decoding Barcode", message: error.localizedDescription)
+                }
+            }
         }
     }
 
@@ -161,6 +190,28 @@ class ViewController: UIViewController, AVCapturePhotoCaptureDelegate {
         shutterButton.showsTouchWhenHighlighted = true
         shutterButton.addTarget(self, action: #selector(captureImage), for: .touchUpInside)
         view.addSubview(shutterButton)
+    }
+
+    private func showInfo(for payload: String) {
+        if let product = productCatalog.item(forKey: payload) {
+            print(payload)
+            showAlert(withTitle: product.name ?? "No product name provided", message: payload)
+        } else {
+            showAlert(withTitle: "No item found for this payload", message: "")
+        }
+    }
+
+    // MARK: - Vision
+    func processClassification(for request: VNRequest) {
+        DispatchQueue.main.async {
+            if let bestResult = request.results?.first as? VNBarcodeObservation,
+                let payload = bestResult.payloadStringValue {
+                self.showInfo(for: payload)
+            } else {
+                self.showAlert(withTitle: "Unable to extract results",
+                               message: "Cannot extract barcode information from data.")
+            }
+        }
     }
 
     // MARK: - Helper functions
